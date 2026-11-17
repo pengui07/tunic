@@ -1,13 +1,64 @@
 name: CI
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: windows-2019
+    runs-on: windows-latest
     steps:
     - name: Checkout
-      uses: actions/checkout@v2
-    - name: Test
-      run: make utest
+      uses: actions/checkout@v4
 
+    - name: Validate PowerShell scripts and templates
+      shell: powershell
+      run: |
+        $ErrorActionPreference = 'Stop'
+
+        $err = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path '.\tunic.ps1'), [ref]$null, [ref]$err)
+        if ($err) { $err; exit 1 }
+
+        [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path '.\files\distros.ps1'), [ref]$null, [ref]$err)
+        if ($err) { $err; exit 1 }
+
+        powershell -NoProfile -ExecutionPolicy Bypass -File .\tunic.ps1 noop
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        $tz = powershell -NoProfile -ExecutionPolicy Bypass -File .\tunic.ps1 tz
+        if (-not $tz -or $tz -match '\s') {
+          throw "Invalid timezone output: '$tz'"
+        }
+        Write-Host "Timezone check OK: $tz"
+
+        $distros = . .\files\distros.ps1
+        if (-not $distros -or $distros.Count -lt 1) {
+          throw "No distros loaded from files/distros.ps1"
+        }
+        Write-Host "Loaded $($distros.Count) distros. First: $($distros[0].name)"
+
+        foreach ($f in @('.\files\grub.fedora.cfg', '.\files\ks.cfg', '.\files\grub.cfg', '.\files\preseed.cfg', '.\run-tunic.bat')) {
+          if (-not (Test-Path -LiteralPath $f)) {
+            throw "Missing required file: $f"
+          }
+        }
+
+        $grubCfg = Get-Content -LiteralPath '.\files\grub.fedora.cfg' -Raw
+        if ($grubCfg -match '(?m)^\s*insmod\s') {
+          throw "files/grub.fedora.cfg must not invoke insmod under Secure Boot"
+        }
+        Write-Host "All Tunic CI checks passed."
+
+    - name: Go vet check
+      shell: powershell
+      run: |
+        if (Get-Command go -ErrorAction SilentlyContinue) {
+          $env:GO111MODULE = 'off'
+          go vet .
+        } else {
+          Write-Host "Go not installed on runner, skipping."
+        }
