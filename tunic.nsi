@@ -4,6 +4,7 @@ ShowInstDetails hide
 SilentInstall silent
 Unicode true
 Icon "files\tunic-logo.ico"
+RequestExecutionLevel admin
 
 !include x64.nsh
 
@@ -12,9 +13,8 @@ Section "Tunic Linux Installer"
     file tunic.ps1
     file /r files
     ${If} ${RunningX64}
-        ExecWait '$WINDIR\sysnative\windowspowershell\v1.0\powershell.exe -executionpolicy bypass -nologo -inputformat none -noninteractive -WindowStyle Hidden -file tunic.ps1'
+        ExecWait '$WINDIR\sysnative\windowspowershell\v1.0\powershell.exe -executionpolicy bypass -nologo -inputformat none -noninteractive -WindowStyle Hidden -file tunic.ps1 -ExeDir "$EXEDIR\."'
     ${Else}
-        ExecWait 'powershell.exe -executionpolicy bypass -nologo -inputformat none -noninteractive -WindowStyle Hidden -file tunic.ps1'
+        ExecWait 'powershell.exe -executionpolicy bypass -nologo -inputformat none -noninteractive -WindowStyle Hidden -file tunic.ps1 -ExeDir "$EXEDIR\."'
     ${EndIf}
 SectionEnd
-

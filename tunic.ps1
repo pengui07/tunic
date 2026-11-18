@@ -6,11 +6,17 @@
 
 $global:NoReboot = $false
 $global:CliIsoPath = $null
+$global:ExeDir = $null
 $op = $null
 
-foreach ($arg in $args) {
+for ($i = 0; $i -lt $args.Count; $i++) {
+    $arg = $args[$i]
     if ($arg -eq 'noop') { exit 0 }
     elseif ($arg -eq '-NoReboot' -or $arg -eq '--no-reboot') { $global:NoReboot = $true }
+    elseif ($arg -eq '-ExeDir' -and ($i + 1) -lt $args.Count) {
+        $i++
+        $global:ExeDir = $args[$i]
+    }
     elseif (-not $op -and $arg -match '\.iso$' -and (Test-Path -LiteralPath $arg)) {
         $global:CliIsoPath = (Resolve-Path -LiteralPath $arg).Path
     }
@@ -66,6 +72,10 @@ function Format-BytesGB([long]$bytes) {
 
 function Get-LocalIsoSearchDirs() {
     $dirs = @()
+    if ($global:ExeDir) {
+        $dirs += $global:ExeDir
+        $dirs += (Join-Path $global:ExeDir 'iso')
+    }
     if ($PSScriptRoot) {
         $dirs += $PSScriptRoot
         $dirs += (Join-Path $PSScriptRoot 'iso')
@@ -586,6 +596,7 @@ function checks() {
             if (-not $scriptPath) { $scriptPath = Join-Path (Get-Location).Path 'tunic.ps1' }
             $argList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$scriptPath`"")
             if ($global:NoReboot) { $argList += '-NoReboot' }
+            if ($global:ExeDir) { $argList += @('-ExeDir', "`"$($global:ExeDir)`"") }
             if ($global:CliIsoPath) { $argList += "`"$global:CliIsoPath`"" }
             Start-Process powershell.exe -ArgumentList $argList -Verb RunAs
         }
