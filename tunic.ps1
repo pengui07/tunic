@@ -553,25 +553,66 @@ function clean() {
     Start-Process cleanmgr -ArgumentList '/sagerun:112' -Wait
 }
 
-function defrag() {
+function Invoke-DisableHibernation() {
     powercfg.exe /h off | Out-Null
     REG ADD "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power" /V HiberbootEnabled /T REG_DWORD /D 0 /F | Out-Null
+}
+
+function Invoke-AsyncVolumeOptimize([string]$driveLetter) {
+    $origTitle = if ($global:Form) { $global:Form.Text } else { "Tunic" }
+    $job = Start-Job -ScriptBlock {
+        param($dl)
+        Optimize-Volume -DriveLetter $dl -Defrag -ErrorAction SilentlyContinue
+    } -ArgumentList $driveLetter
+
     try {
-        Optimize-Volume -DriveLetter $global:letter -Defrag -ErrorAction SilentlyContinue
-        Optimize-Volume -DriveLetter $global:letter -SlabConsolidate -ErrorAction SilentlyContinue
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($job.State -eq 'Running' -or $job.State -eq 'NotStarted') {
+            $secs = [int]$sw.Elapsed.TotalSeconds
+            if ($global:Form) {
+                $global:Form.Text = "Tunic - Optimizing ${driveLetter}:... (${secs}s)"
+                if ($global:isoInfoLabel -and $global:main.Visible) {
+                    $global:isoInfoLabel.Text = "Optimizing ${driveLetter}: to free shrinkable space (${secs}s)..."
+                }
+                [System.Windows.Forms.Application]::DoEvents()
+            }
+            Start-Sleep -Milliseconds 200
+        }
+        Receive-Job -Job $job -ErrorAction SilentlyContinue | Out-Null
+    } finally {
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        if ($global:Form) {
+            $global:Form.Text = $origTitle
+            [System.Windows.Forms.Application]::DoEvents()
+        }
+    }
+}
+
+function defrag() {
+    Invoke-DisableHibernation
+    try {
+        Invoke-AsyncVolumeOptimize $global:letter
     } catch {
         Write-Host "Optimize-Volume note: $($_.Exception.Message)"
     }
 }
 
 function Try-ReclaimShrinkSpace([long]$neededBytes) {
-    defrag
+    # Step 1: Turning off hibernation deletes hiberfil.sys immediately without a slow defrag
+    Invoke-DisableHibernation
     calcPartition
     if ($global:maxAvailable -ge $neededBytes) { return $true }
 
-    if (yes("Hibernation was disabled and the drive optimized, but Windows still reports only $([math]::Floor($global:maxAvailable / 1GB)) GB shrinkable.`n`nThis is usually caused by System Restore shadow copies or the Windows pagefile (pagefile.sys) near the end of ${global:letter}:.`n`nWould you like Tunic to delete Windows restore shadow copies on ${global:letter}: now?")) {
+    # Step 2: Run non-blocking volume defrag/optimize
+    Invoke-AsyncVolumeOptimize $global:letter
+    calcPartition
+    if ($global:maxAvailable -ge $neededBytes) { return $true }
+
+    if (yes("Hibernation was disabled and ${global:letter}: was optimized, but Windows still reports only $([math]::Floor($global:maxAvailable / 1GB)) GB shrinkable.`n`nThis is usually caused by System Restore shadow copies or the Windows pagefile (pagefile.sys) near the end of ${global:letter}:.`n`nWould you like Tunic to delete Windows restore shadow copies on ${global:letter}: now?")) {
         & vssadmin.exe delete shadows /for="${global:letter}:" /all /quiet | Out-Null
-        defrag
+        calcPartition
+        if ($global:maxAvailable -ge $neededBytes) { return $true }
+        Invoke-AsyncVolumeOptimize $global:letter
         calcPartition
         if ($global:maxAvailable -ge $neededBytes) { return $true }
     }
