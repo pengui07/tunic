@@ -203,49 +203,88 @@ function Inspect-LinuxIso([string]$isoPath) {
         }
 
         $drive = "$($vol.DriveLetter):"
-        $hasLiveSquash = (Test-Path -LiteralPath "$drive\LiveOS\squashfs.img") -or (Test-Path -LiteralPath "$drive\LiveOS\rootfs.img")
-        $hasInstallImg = Test-Path -LiteralPath "$drive\images\install.img"
+        $hasLiveSquash = (Test-Path -LiteralPath "$drive\LiveOS\squashfs.img") -or
+                         (Test-Path -LiteralPath "$drive\LiveOS\rootfs.img") -or
+                         [bool](Get-ChildItem -LiteralPath "$drive\" -Recurse -File -Filter '*.squashfs' -ErrorAction SilentlyContinue | Select-Object -First 1)
+        $hasInstallImg = (Test-Path -LiteralPath "$drive\images\install.img") -or
+                         (Test-Path -LiteralPath "$drive\LiveOS\install.img")
         $hasCasper = Test-Path -LiteralPath "$drive\casper\vmlinuz"
-        $hasPxeKernel = (Test-Path -LiteralPath "$drive\images\pxeboot\vmlinuz") -and (Test-Path -LiteralPath "$drive\images\pxeboot\initrd.img")
-        $hasIsolinuxKernel = (Test-Path -LiteralPath "$drive\isolinux\vmlinuz") -and (Test-Path -LiteralPath "$drive\isolinux\initrd.img")
         $hasBootx64 = Test-Path -LiteralPath "$drive\EFI\BOOT\BOOTX64.EFI"
-        $hasGrubx64 = Test-Path -LiteralPath "$drive\EFI\BOOT\grubx64.efi"
+        $hasGrubx64 = (Test-Path -LiteralPath "$drive\EFI\BOOT\grubx64.efi") -or (Test-Path -LiteralPath "$drive\EFI\fedora\grubx64.efi")
         $hasRepo = (Test-Path -LiteralPath "$drive\repodata") -or (Test-Path -LiteralPath "$drive\Packages")
 
         $linuxCmd = 'linux'
         $initrdCmd = 'initrd'
-        $isoGrubCfgPath = "$drive\EFI\BOOT\grub.cfg"
-        if (Test-Path -LiteralPath $isoGrubCfgPath) {
-            $cfgText = Get-Content -LiteralPath $isoGrubCfgPath -Raw -ErrorAction SilentlyContinue
-            if ($cfgText -match '(?m)^\s*linuxefi\s') {
-                $linuxCmd = 'linuxefi'
-                $initrdCmd = 'initrdefi'
+        $kernelPath = $null
+        $initrdPath = $null
+        $grubBootArgs = ''
+
+        # Parse ISO's own GRUB config(s) to discover exact kernel/initrd paths & boot style (supports Kiwi + Lorax layouts)
+        $cfgCandidates = @(
+            "$drive\boot\grub2\grub.cfg",
+            "$drive\EFI\BOOT\grub.cfg",
+            "$drive\EFI\fedora\grub.cfg",
+            "$drive\boot\grub\grub.cfg"
+        )
+        foreach ($cfgPath in $cfgCandidates) {
+            if (-not (Test-Path -LiteralPath $cfgPath)) { continue }
+            $cfgText = Get-Content -LiteralPath $cfgPath -Raw -ErrorAction SilentlyContinue
+            if (-not $cfgText) { continue }
+            if ($cfgText -match '(?m)^\s*(linuxefi|linux)\s+(\S+)(.*)$') {
+                $linuxCmd = $matches[1]
+                $candKernel = $matches[2].Trim()
+                $grubBootArgs = $matches[3].Trim()
+                $candKernelWin = Join-Path "$drive\" ($candKernel.TrimStart('/').Replace('/', '\'))
+                if (Test-Path -LiteralPath $candKernelWin) {
+                    $kernelPath = $candKernel
+                }
+            }
+            if ($cfgText -match '(?m)^\s*(initrdefi|initrd)\s+(\S+)') {
+                $initrdCmd = $matches[1]
+                $candInitrd = $matches[2].Trim()
+                $candInitrdWin = Join-Path "$drive\" ($candInitrd.TrimStart('/').Replace('/', '\'))
+                if (Test-Path -LiteralPath $candInitrdWin) {
+                    $initrdPath = $candInitrd
+                }
+            }
+            if ($kernelPath -and $initrdPath) { break }
+        }
+
+        # Fallback: probe known paths or search the mounted ISO for kernel & initrd
+        if (-not $kernelPath) {
+            foreach ($rel in @('\images\pxeboot\vmlinuz', '\boot\x86_64\loader\linux', '\isolinux\vmlinuz', '\boot\vmlinuz', '\vmlinuz')) {
+                if (Test-Path -LiteralPath "$drive$rel") {
+                    $kernelPath = $rel.Replace('\', '/')
+                    break
+                }
+            }
+            if (-not $kernelPath) {
+                $kFile = Get-ChildItem -LiteralPath "$drive\" -Recurse -File -Include 'vmlinuz*','linux' -ErrorAction SilentlyContinue |
+                    Where-Object { $_.FullName -notmatch '\\casper\\' } | Select-Object -First 1
+                if ($kFile) {
+                    $kernelPath = '/' + $kFile.FullName.Substring($drive.Length).TrimStart('\').Replace('\', '/')
+                }
+            }
+        }
+
+        if (-not $initrdPath) {
+            foreach ($rel in @('\images\pxeboot\initrd.img', '\boot\x86_64\loader\initrd', '\isolinux\initrd.img', '\boot\initrd.img', '\initrd.img', '\boot\initramfs.img')) {
+                if (Test-Path -LiteralPath "$drive$rel") {
+                    $initrdPath = $rel.Replace('\', '/')
+                    break
+                }
+            }
+            if (-not $initrdPath) {
+                $iFile = Get-ChildItem -LiteralPath "$drive\" -Recurse -File -Include 'initrd*','initramfs*' -ErrorAction SilentlyContinue |
+                    Where-Object { $_.FullName -notmatch '\\casper\\' } | Select-Object -First 1
+                if ($iFile) {
+                    $initrdPath = '/' + $iFile.FullName.Substring($drive.Length).TrimStart('\').Replace('\', '/')
+                }
             }
         }
 
         $family = 'unknown'
-        $kernelPath = $null
-        $initrdPath = $null
-
-        if ($hasLiveSquash -and ($hasPxeKernel -or $hasIsolinuxKernel)) {
-            $family = 'fedora-live'
-            if ($hasPxeKernel) {
-                $kernelPath = '/images/pxeboot/vmlinuz'
-                $initrdPath = '/images/pxeboot/initrd.img'
-            } else {
-                $kernelPath = '/isolinux/vmlinuz'
-                $initrdPath = '/isolinux/initrd.img'
-            }
-        } elseif (($hasInstallImg -or $hasPxeKernel) -and -not $hasCasper) {
-            $family = 'fedora-installer'
-            if ($hasPxeKernel) {
-                $kernelPath = '/images/pxeboot/vmlinuz'
-                $initrdPath = '/images/pxeboot/initrd.img'
-            } elseif ($hasIsolinuxKernel) {
-                $kernelPath = '/isolinux/vmlinuz'
-                $initrdPath = '/isolinux/initrd.img'
-            }
-        } elseif ($hasCasper) {
+        if ($hasCasper) {
             $family = 'casper'
             $kernelPath = '/casper/vmlinuz'
             if (Test-Path -LiteralPath "$drive\casper\initrd.lz") {
@@ -253,7 +292,16 @@ function Inspect-LinuxIso([string]$isoPath) {
             } else {
                 $initrdPath = '/casper/initrd'
             }
+        } elseif ($kernelPath -and $initrdPath) {
+            $isLiveIso = $hasLiveSquash -or ($grubBootArgs -match 'rd\.live\.image|root=live:') -or ($vol.FileSystemLabel -match 'Live|WS-Live|KDE')
+            if ($isLiveIso) {
+                $family = 'fedora-live'
+            } elseif ($hasInstallImg -or ($grubBootArgs -match 'inst\.stage2') -or ($vol.FileSystemLabel -match 'Fedora') -or (Test-Path -LiteralPath "$drive\.discinfo") -or (Test-Path -LiteralPath "$drive\.treeinfo")) {
+                $family = 'fedora-installer'
+            }
         }
+
+        $topDirs = @((Get-ChildItem -LiteralPath "$drive\" -Force -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)) -join ', '
 
         $meta = @{
             isoPath    = $isoPath
@@ -266,6 +314,7 @@ function Inspect-LinuxIso([string]$isoPath) {
             initrdCmd  = $initrdCmd
             hasEfiShim = ($hasBootx64 -and $hasGrubx64)
             hasRepo    = $hasRepo
+            topDirs    = $topDirs
         }
         $global:isoMetaCache[$isoPath] = $meta
         return $meta
@@ -1078,9 +1127,13 @@ function Install-FedoraBootloader([string]$stagingDrive, [hashtable]$meta) {
         }
 
         $stagingEfiBoot = "${stagingDrive}\EFI\BOOT"
+        $stagingEfiFedora = "${stagingDrive}\EFI\fedora"
         $copiedShim = $false
         foreach ($bin in @('BOOTX64.EFI', 'grubx64.efi', 'mmx64.efi')) {
             $srcBin = Join-Path $stagingEfiBoot $bin
+            if (-not (Test-Path -LiteralPath $srcBin) -and (Test-Path -LiteralPath (Join-Path $stagingEfiFedora $bin))) {
+                $srcBin = Join-Path $stagingEfiFedora $bin
+            }
             if (Test-Path -LiteralPath $srcBin) {
                 $dstBin = Join-Path $tunicEfiDir $bin
                 Copy-Item -LiteralPath $srcBin -Destination $dstBin -Force
@@ -1285,7 +1338,7 @@ function checkFields() {
         try {
             $meta = Inspect-LinuxIso $selected.url
             if ($meta.family -eq 'unknown') {
-                [Void][System.Windows.Forms.MessageBox]::Show("Unrecognized ISO layout in $($selected.url). Expected Fedora Live/Installer or Ubuntu/Mint ISO.", "Tunic")
+                [Void][System.Windows.Forms.MessageBox]::Show("Unrecognized ISO layout in $($selected.url). Expected Fedora Live/Installer or Ubuntu/Mint ISO.`n`nDetected root entries: $($meta.topDirs)`nKernel: $($meta.kernelPath) | Initrd: $($meta.initrdPath)", "Tunic")
                 $global:outer.Enabled = $true
                 return $false
             }
