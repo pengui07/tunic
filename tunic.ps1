@@ -521,6 +521,7 @@ function disableSwap() {
         if ($pagefiles) {
             $pagefiles | Remove-CimInstance -ErrorAction SilentlyContinue
         }
+        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' -Name 'PagingFiles' -Value ([string[]]@()) -Type MultiString -ErrorAction Stop
     } catch {
         Write-Host "Pagefile update note: $($_.Exception.Message)"
     }
@@ -538,6 +539,7 @@ function enableSwap() {
     try { Enable-WindowsErrorReporting -ErrorAction SilentlyContinue | Out-Null } catch {}
 
     try {
+        Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management' -Name 'PagingFiles' -Value ([string[]]@('?:\pagefile.sys')) -Type MultiString -ErrorAction SilentlyContinue
         $computersys = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction Stop
         Set-CimInstance -InputObject $computersys -Property @{ AutomaticManagedPagefile = $true } -ErrorAction Stop
     } catch {
