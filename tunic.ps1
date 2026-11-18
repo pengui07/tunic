@@ -564,6 +564,7 @@ function Invoke-AsyncVolumeOptimize([string]$driveLetter) {
     $origTitle = if ($global:Form) { $global:Form.Text } else { "Tunic" }
     $job = Start-Job -ScriptBlock {
         param($dl)
+        & defrag.exe "${dl}:" /X | Out-Null
         Optimize-Volume -DriveLetter $dl -Defrag -ErrorAction SilentlyContinue
     } -ArgumentList $driveLetter
 
