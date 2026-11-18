@@ -976,8 +976,8 @@ function New-FedoraStagingPartition([long]$stagingBytes) {
 
     # Shrink C: if unallocated gap isn't already large enough (e.g. Full Disk or Custom mode)
     if ($global:gap -lt $stagingBytes) {
-        $shrinkBy = $stagingBytes - $global:gap + 16MB
-        $newSize = [long]([math]::Floor(($global:partc.Size - $shrinkBy) / 1MB) * 1MB)
+        $shrinkBy = $stagingBytes - $global:gap + [long]16MB
+        $newSize = [long]([math]::Floor(([long]$global:partc.Size - $shrinkBy) / 1MB) * 1MB)
         $minSize = (Get-PartitionSupportedSize -DriveLetter $global:letter).SizeMin
         if ($newSize -lt $minSize) {
             throw "Not enough free space on ${global:letter}: to create $(Format-BytesGB $stagingBytes) GB staging partition."
@@ -1285,13 +1285,15 @@ function calcPartition() {
         Select-Object -First 1
 
     if (-not $partnext) {
-        $global:gap = [math]::Max(0, [long]$disk.Size - $partcEnd - 1MB)
+        $rawGap = [long]$disk.Size - $partcEnd - [long]1MB
     } else {
-        $global:gap = [math]::Max(0, [long]$partnext.Offset - $partcEnd)
+        $rawGap = [long]$partnext.Offset - $partcEnd
     }
+    $global:gap = if ($rawGap -lt 0) { [long]0 } else { [long]$rawGap }
 
     $supported = Get-PartitionSupportedSize -DriveLetter "$letter"
-    $global:maxAvailable = [math]::Max(0, ([long]$global:partc.Size - [long]$supported.SizeMin + [long]$global:gap - 16MB))
+    $rawAvail = [long]$global:partc.Size - [long]$supported.SizeMin + [long]$global:gap - [long]16MB
+    $global:maxAvailable = if ($rawAvail -lt 0) { [long]0 } else { [long]$rawAvail }
 }
 
 function repartition() {
