@@ -1272,6 +1272,7 @@ function installGrub([string]$iso_path) {
 
 # Calculates globals gap and maxAvailable
 function calcPartition() {
+    try { Update-HostStorageCache -ErrorAction SilentlyContinue | Out-Null } catch {}
     $letter = $global:letter
     $global:partc = Get-Partition -DriveLetter $letter
     $disk = Get-Disk -Number $global:partc.DiskNumber
