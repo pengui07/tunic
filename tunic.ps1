@@ -509,9 +509,29 @@ function defrag() {
     REG ADD "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Power" /V HiberbootEnabled /T REG_DWORD /D 0 /F | Out-Null
     try {
         Optimize-Volume -DriveLetter $global:letter -Defrag -ErrorAction SilentlyContinue
+        Optimize-Volume -DriveLetter $global:letter -SlabConsolidate -ErrorAction SilentlyContinue
     } catch {
         Write-Host "Optimize-Volume note: $($_.Exception.Message)"
     }
+}
+
+function Try-ReclaimShrinkSpace([long]$neededBytes) {
+    defrag
+    calcPartition
+    if ($global:maxAvailable -ge $neededBytes) { return $true }
+
+    if (yes("Hibernation was disabled and the drive optimized, but Windows still reports only $([math]::Floor($global:maxAvailable / 1GB)) GB shrinkable.`n`nThis is usually caused by System Restore shadow copies or the Windows pagefile (pagefile.sys) near the end of ${global:letter}:.`n`nWould you like Tunic to delete Windows restore shadow copies on ${global:letter}: now?")) {
+        & vssadmin.exe delete shadows /for="${global:letter}:" /all /quiet | Out-Null
+        defrag
+        calcPartition
+        if ($global:maxAvailable -ge $neededBytes) { return $true }
+    }
+
+    if (yes("Still only $([math]::Floor($global:maxAvailable / 1GB)) GB shrinkable on ${global:letter}:.`n`nDisable Windows Swap (pagefile.sys) and reboot so Windows releases locked space at the end of ${global:letter}:?")) {
+        disableSwap
+        Restart-Computer -Force
+    }
+    return $false
 }
 
 function ternary($expr, $ontrue, $onfalse) {
@@ -1333,7 +1353,15 @@ function checkFields() {
         $neededBytes = if ($selected.sizeBytes) { Get-StagingBytesForIso $selected.sizeBytes } else { 4GB }
         if ($global:maxAvailable -lt $neededBytes) {
             $neededGB = [math]::Ceiling($neededBytes / 1GB)
-            [Void][System.Windows.Forms.MessageBox]::Show("Fedora installation needs at least ${neededGB} GB of shrinkable/free space on ${global:letter}: for the temporary FAT32 boot partition.", "Tunic")
+            $availGB = [math]::Round($global:maxAvailable / 1GB, 1)
+            $freeGB = [math]::Round((Get-Volume -DriveLetter $global:letter).SizeRemaining / 1GB, 1)
+            $ask = "Fedora needs ~${neededGB} GB of shrinkable space on ${global:letter}: for the temporary FAT32 boot partition.`n`n${global:letter}: has ${freeGB} GB free, but Windows currently only allows shrinking ${availGB} GB (usually because hiberfil.sys, pagefile.sys, or shadow copies sit at the end of the drive).`n`nHave Tunic try reclaiming shrinkable space now (disables Hibernation/Fast Startup and consolidates)? "
+            if (yes($ask)) {
+                if (Try-ReclaimShrinkSpace $neededBytes) {
+                    $global:outer.Enabled = $true
+                    return $true
+                }
+            }
             $global:outer.Enabled = $true
             return $false
         }
@@ -1815,7 +1843,11 @@ function gui() {
 
     $defragButton.Add_Click({
         $global:outer.Enabled = $false
-        try { Start-Process dfrgui -Wait; calcGui } finally { $global:outer.Enabled = $true }
+        try {
+            $minBytes = [long](Get-MinLinuxGBForSelectedDistro) * 1GB
+            Try-ReclaimShrinkSpace $minBytes | Out-Null
+            calcGui
+        } finally { $global:outer.Enabled = $true }
     })
 
     $parterButton.Add_Click({
